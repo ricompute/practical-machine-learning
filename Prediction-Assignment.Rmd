@@ -1,0 +1,237 @@
+---
+title: "Practical Machine Learning Prediction Assignment"
+subtitle: "Final Project"
+author: "Richard Lindsey"
+date: '`r format(Sys.time(), "%B %d, %Y")`'
+---
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(fig.align = "center", comment = "#>")
+options(readr.num_columns = 0, warn = -1)
+```
+
+# Introduction
+
+In order to quantify how well participants perform exercise activities, 
+measurements from accelerometers on the belt, forearm, arm, and dumbell of six 
+participants were collected as the participants performed barbell lifts
+correctly and incorrectly in five different ways. Here we build a model with the
+aim of predicting which way the exercise was performed (the `classe` variable in
+the dataset. More information about the data used in this project is available
+in the Weight Lifting Exercise Dataset found 
+[here](http://groupware.les.inf.puc-rio.br/har).
+
+# Get, Partition, and Clean Data
+
+The following packages will be used in this project:
+
+```{r load_packages, collapse = TRUE}
+library(readr)
+library(tibble)
+library(caret)
+```
+
+The training data for the project are found here:
+
+https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv
+
+The test data are found here:
+
+https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv
+
+## Get Data
+
+If the files `pml-training.csv` and `pml-testing.csv` are not in the working 
+directory, we will download them and read them into R:
+
+```{r get_data, collapse = TRUE}
+training_url <- "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv"
+testing_url <- "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv"
+
+if (!file.exists("pml-training.csv")) {
+    download.file(training_url, "pml-training.csv")
+}
+training_full <- read_csv("pml-training.csv", na = c("NA", "", "#DIV/0!"))
+
+if (!file.exists("pml-testing.csv")) {
+    download.file(testing_url, "pml-testing.csv")
+}
+testing_full <- read_csv("pml-testing.csv", na = c("NA", "", "#DIV/0!"))
+```
+
+## Partition Data
+
+We will partition the data into three parts. The initial models will be trained 
+on the `train_part`, which is equal to 49% of the total training data. The
+initial models will be evaluated using the `test_part`, which is equal to 21% of
+the total training data. Finally, the initial models will be combined into a
+final model, which will be validated to estimate out-of-sample error on the
+`valid_part`, which is equal to 30% of the total training data.
+
+```{r partition_data}
+set.seed(2718)  # For reproducibility
+in_build_part <- createDataPartition(training_full$classe, p = 0.7, list = FALSE)
+build_part <- training_full[in_build_part, ]
+valid_part <- training_full[-in_build_part, ]
+in_train_part <- createDataPartition(build_part$classe, p = 0.7, list = FALSE)
+train_part <- build_part[in_train_part, ]
+test_part <- build_part[-in_train_part, ]
+```
+
+## Clean Data
+
+The training data will be cleaned by first removing variables which have near 
+zero variance, second by removing variables with missing values, and finally by 
+removing the first six variables, which contain information such as sample ID
+and timestamps which are unlikely to contribute to predicting the exercise
+`classe`.
+
+```{r clean_data}
+train_nzv <- train_part[ , -nearZeroVar(train_part)]
+train_clean <- train_nzv[ , colSums(is.na(train_nzv)) == 0]
+train_clean <- train_clean[ , -(1:6)]
+```
+
+# Build Model(s)
+
+## Generalized Boosted Model
+
+First, we will build a generalized boosted model.
+
+```{r gbm, cache = TRUE, collapse = TRUE}
+gbm_mod <- train(classe ~ ., data = train_clean, method = "gbm", verbose = FALSE)
+```
+
+We will use this model to predict the `classe` of the `test_part` of the
+training data.
+
+```{r gbm_pred, collapse = TRUE}
+gbm_pred <- predict(gbm_mod, test_part)
+```
+
+We will use a confusion matrix to evaluate how the GBM model performed.
+
+```{r gbm_CM}
+(gbm_CM <- confusionMatrix(gbm_pred, test_part$classe))
+plot(gbm_CM$table, main = "Confusion Matrix: GBM")
+```
+
+The GBM had an accuracy of `r gbm_CM$overall["Accuracy"]` and an out-of-sample 
+error rate of `r 1 - gbm_CM$overall["Accuracy"]`.
+
+## Random Forest
+
+Since the GBM only had an accuracy of ~ 0.95, we will next use a random forest 
+model to attempt to improve accuracy.
+
+```{r rf, cache = TRUE, collapse = TRUE}
+rf_mod <- train(classe ~ ., data = train_clean, method = "rf")
+```
+
+Using the random forest model to predict the `classe` of the `test_part` of the 
+training data:
+
+```{r rf_pred, collapse = TRUE}
+rf_pred <- predict(rf_mod, test_part)
+```
+
+Using a confusion matrix to evaluate the performance of the random forest model:
+
+```{r rf_CM}
+(rf_CM <- confusionMatrix(rf_pred, test_part$classe))
+plot(rf_CM$table, main = "Confusion Matrix: Random Forest")
+```
+
+The random forest model had an accuracy of `r rf_CM$overall["Accuracy"]` and an
+out-of-sample error rate of `r 1 - rf_CM$overall["Accuracy"]`.
+
+## Combined Model
+
+Finally, we will combine the predictions from the GBM and random forest model 
+and use them to train a new combined random forest model.
+
+```{r combined, cache = TRUE, collapse = TRUE}
+pred_df <- data_frame(gbm = gbm_pred, rf = rf_pred,
+                     classe = test_part$classe)
+combined_mod <- train(classe ~ ., data = pred_df, method = "rf")
+```
+
+Using this new combined random forest model to predict the `classe` of the 
+`test_part` of the training data (which was used to train this new model):
+
+```{r combined_pred, collapse = TRUE}
+combined_pred <- predict(combined_mod, pred_df)
+```
+
+And, evaluating the performance of this new combined model with a confusion 
+matrix:
+
+```{r combined_CM}
+(combined_CM <- confusionMatrix(combined_pred, pred_df$classe))
+plot(combined_CM$table, main = "Confusion Matrix: Combined Random Forest Model")
+```
+
+The new combined random forest model had an accuracy of 
+`r combined_CM$overall["Accuracy"]`. This combined model has slightly better
+ accuracy than the random forest model alone on the `test_part` of the training 
+ data.
+
+## Validate Combined Model
+
+Since the `test_part` of the training data was used to train the combined model, 
+it is not a good estimate of out-of-sample error. Instead, we will predict 
+the `classe` of the `valid_part` of the training data and use that to estimate 
+the out-of-sample error.
+
+```{r predict_valid, collapse = TRUE}
+gbm_pred_valid <- predict(gbm_mod, valid_part)
+rf_pred_valid <- predict(rf_mod, valid_part)
+pred_df_valid <- data_frame(gbm = gbm_pred_valid, rf = rf_pred_valid)
+```
+
+```{r predict_combined_valid}
+combined_pred_valid <- predict(combined_mod, pred_df_valid)
+```
+
+Using a confusion matrix to evaluate the performance of the combined model on 
+the `valid_part` of the training data:
+
+```{r combined_valid_CM}
+(combined_valid_CM <- confusionMatrix(combined_pred_valid, valid_part$classe))
+plot(combined_valid_CM$table, main = "Confusion Matrix: Combined Model Validation")
+```
+
+The random forest model had an accuracy of 
+`r combined_valid_CM$overall["Accuracy"]` and an out-of-sample error rate of 
+`r 1 - combined_valid_CM$overall["Accuracy"]`, which may not be an improvement 
+over the performance of the original random forest model by itself, especially 
+since the combined model requires the extra computation time to fit extra 
+models.
+
+
+# Predict for Test Data
+
+Finally, we will predict the `classe` of the testing data for submission in 
+the prediction quiz.
+
+```{r predict_test, collapse = TRUE}
+gbm_pred_test <- predict(gbm_mod, testing_full)
+rf_pred_test <- predict(rf_mod, testing_full)
+pred_df_test <- data_frame(gbm = gbm_pred_test, rf = rf_pred_test)
+```
+
+```{r predict_combined_test}
+(combined_pred_test <- predict(combined_mod, pred_df_test))
+```
+
+# Session Info
+
+For reproducibility, this report was rendered under the following conditions:
+
+```{r session_info}
+sessionInfo()
+rmarkdown::pandoc_version()
+```
+
+
+
